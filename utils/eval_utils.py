@@ -177,6 +177,17 @@ def eval_rendering(
         open(os.path.join(psnr_save_dir, "final_result.json"), "w", encoding="utf-8"),
         indent=4,
     )
+
+    # 均匀固定采样20张渲染图，方便改进前后对比
+    render_save_dir = os.path.join(psnr_save_dir, "render_images")
+    mkdir_p(render_save_dir)
+    save_count = min(20, len(img_pred))
+    fixed_frames = list(range(0, len(img_pred), max(1, len(img_pred)//save_count)))[:save_count]
+    for i, idx in enumerate(fixed_frames):
+        frame_idx = saved_frame_idx[idx]
+        cv2.imwrite(os.path.join(render_save_dir, f"pred_{i:03d}_frame{frame_idx:04d}.png"), img_pred[idx])
+        cv2.imwrite(os.path.join(render_save_dir, f"gt_{i:03d}_frame{frame_idx:04d}.png"), img_gt[idx])
+
     return output
 
 

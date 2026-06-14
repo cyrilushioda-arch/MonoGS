@@ -3,6 +3,7 @@ import time
 import numpy as np
 import torch
 import torch.multiprocessing as mp
+import torch.nn.functional as F
 
 from gaussian_splatting.gaussian_renderer import render
 from gaussian_splatting.utils.graphics_utils import getProjectionMatrix2, getWorld2View2
@@ -282,6 +283,51 @@ class FrontEnd(mp.Process):
             idx = np.argmax(inv_dist)
             removed_frame = window[N_dont_touch + idx]
             window.remove(removed_frame)
+
+
+        # === Loop closure hint: appearance-based keyframe retrieval (improvement B) ===
+        if self.initialized and len(self.cameras) > 0:
+            curr_img = self.cameras[cur_frame_idx].original_image  # (3, H, W)
+            if curr_img is not None:
+                curr_gray = (0.299 * curr_img[0] + 0.587 * curr_img[1] + 0.114 * curr_img[2]).unsqueeze(0).unsqueeze(0)
+                curr_small = F.avg_pool2d(curr_gray, kernel_size=8)
+                curr_vec = curr_small.flatten()
+                curr_vec = curr_vec / (curr_vec.norm() + 1e-6)
+
+                best_sim = 0.85  # similarity threshold
+                best_kf_idx = None
+
+                # search through historical keyframes NOT in current window
+                all_kf_indices = list(self.cameras.keys())
+                for hist_idx in all_kf_indices:
+                    if hist_idx in window:
+                        continue
+                    if abs(hist_idx - cur_frame_idx) < 50:
+                        continue  # skip nearby frames
+                    hist_frame = self.cameras[hist_idx]
+                    hist_img = hist_frame.original_image
+                    if hist_img is None:
+                        continue
+                    hist_gray = (0.299 * hist_img[0] + 0.587 * hist_img[1] + 0.114 * hist_img[2]).unsqueeze(0).unsqueeze(0)
+                    hist_small = F.avg_pool2d(hist_gray, kernel_size=8)
+                    hist_vec = hist_small.flatten()
+                    hist_vec = hist_vec / (hist_vec.norm() + 1e-6)
+
+                    if curr_vec.shape != hist_vec.shape:
+                        continue
+
+                    sim = torch.dot(curr_vec, hist_vec).item()
+                    if sim > best_sim:
+                        best_sim = sim
+                        best_kf_idx = hist_idx
+
+                if best_kf_idx is not None:
+                    if best_kf_idx in occ_aware_visibility:
+                        if len(window) >= self.config["Training"]["window_size"]:
+                            window.pop()
+                        if best_kf_idx not in window:
+                            window.append(best_kf_idx)
+        # === End of improvement B ===
 
         return window, removed_frame
 

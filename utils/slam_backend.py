@@ -228,7 +228,38 @@ class BackEnd(mp.Process):
 
             scaling = self.gaussians.get_scaling
             isotropic_loss = torch.abs(scaling - scaling.mean(dim=1).view(-1, 1))
-            loss_mapping += 10 * isotropic_loss.mean()
+            #loss_mapping += 10 * isotropic_loss.mean()
+            # === Adaptive iso loss (improvement) ===
+            # === Adaptive iso loss per-Gaussian (improvement v2) ===
+            gray = 0.299 * image[0] + 0.587 * image[1] + 0.114 * image[2]
+            grad_x = torch.abs(gray[1:, :] - gray[:-1, :])
+            grad_y = torch.abs(gray[:, 1:] - gray[:, :-1])
+            grad_map = torch.zeros_like(gray)
+            grad_map[:-1, :-1] = (grad_x[:, :-1] + grad_y[:-1, :]) / 2.0
+
+            H, W = gray.shape
+            means2d = self.gaussians.get_xyz
+            with torch.no_grad():
+                fx = viewpoint.fx if hasattr(viewpoint, 'fx') else W / 2
+                fy = viewpoint.fy if hasattr(viewpoint, 'fy') else H / 2
+                cx = viewpoint.cx if hasattr(viewpoint, 'cx') else W / 2
+                cy = viewpoint.cy if hasattr(viewpoint, 'cy') else H / 2
+                R = torch.tensor(viewpoint.R, device='cuda').float()
+                T = torch.tensor(viewpoint.T, device='cuda').float()
+                pts_cam = (means2d @ R.T) + T
+                pts_cam[:, 2] = torch.clamp(pts_cam[:, 2], min=0.1)
+                u = (pts_cam[:, 0] / pts_cam[:, 2] * fx + cx).long()
+                v = (pts_cam[:, 1] / pts_cam[:, 2] * fy + cy).long()
+                u = torch.clamp(u, 0, W - 1)
+                v = torch.clamp(v, 0, H - 1)
+                local_grad = grad_map[v, u]
+                per_gaussian_lambda = 10.0 * torch.exp(-5.0 * local_grad)
+                per_gaussian_lambda = torch.clamp(per_gaussian_lambda, min=1.0, max=10.0)
+
+            weighted_iso = per_gaussian_lambda.unsqueeze(1) * isotropic_loss
+            loss_mapping += weighted_iso.mean()
+            # === End of improvement v2 ===
+            
             loss_mapping.backward()
             gaussian_split = False
             ## Deinsifying / Pruning Gaussians
